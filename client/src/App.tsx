@@ -219,37 +219,52 @@ function App() {
         //   },
         // });
 
-        // TODO: Implement Go-To-Definition better
-        // This approach only gives us the file on the server (plus line number) it wants
-        // to open, is there a better approach?
-        const editorService = (leanMonacoEditor.editor as any)?._codeEditorService
-        if (editorService) {
-          const openEditorBase = editorService.openCodeEditor.bind(editorService)
-          editorService.openCodeEditor = async (input: any, source: any) => {
-              const result = await openEditorBase(input, source)
-              if (result === null) {
-                // found this out with `console.debug(input)`:
-                // `resource.path` is the file go-to-def tries to open on the disk
-                // we try to create a doc-gen link from that. Could not extract the
-                // (fully-qualified) decalaration name... with that one could
-                // call `...${path}.html#${declaration}`
-                let path = input.resource.path.replace(
-                  new RegExp("^.*/(?:lean|\.lake/packages/[^/]+/)"), ""
-                ).replace(
-                  new RegExp("\.lean$"), ""
-                )
-
-                if (window.confirm(`Do you want to open the docs?\n\n${path} (line ${input.options.selection.startLineNumber})`)) {
-                  let newTab = window.open(`https://leanprover-community.github.io/mathlib4_docs/${path}.html`, "_blank")
-                  if (newTab) {
-                    newTab.focus()
-                  }
-                }
-              }
-              return null
-              // return result // always return the base result
+        const findFullyQualifiedName = (
+            editor: monaco.editor.IStandaloneCodeEditor,
+            model: monaco.editor.ITextModel
+        ): string | null => {
+          const currentPosition = editor.getPosition();
+          if (!currentPosition) {
+            return null;
           }
-        }
+
+          const wordInfo = model.getWordAtPosition(currentPosition);
+          if (!wordInfo) {
+            return null;
+          }
+
+          const escapedWord = wordInfo.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const searchPattern = `[\\w.]*${escapedWord}`;
+          const match = model.findPreviousMatch(searchPattern, currentPosition, true, true, null, true);
+          return match?.matches?.[0] ?? null;
+        };
+
+        monaco.editor.registerEditorOpener({
+          openCodeEditor: (source, resource, selectionOrPosition) => {
+            const leanEditor = leanMonacoEditor.editor;
+            const leanModel = leanEditor?.getModel();
+            if (!leanEditor || !leanModel) {
+              return false;
+            }
+
+            const qualifiedName = findFullyQualifiedName(leanEditor, leanModel);
+            const pathMatch = /^.*\/(?:lean|\.lake\/packages\/[^\/]+)\/(.+)\.lean$/.exec(resource.path);
+            if (!pathMatch || pathMatch.length < 2 || !qualifiedName) {
+              return false;
+            }
+
+            const docsBasePath = "https://leanprover-community.github.io/mathlib4_docs"
+            const defPath = pathMatch[1]
+            const docsUrl = `${docsBasePath}/${defPath}.html#${qualifiedName}`;
+
+            if (window.confirm(`Do you want to open the documentation?\n\n${defPath}`)) {
+              const docsTab = window.open(docsUrl, "_blank");
+              docsTab?.focus();
+            }
+
+            return true;
+          }
+        });
 
         // Keeping the `code` state up-to-date with the changes in the editor
         leanMonacoEditor.editor?.onDidChangeModelContent(() => {
